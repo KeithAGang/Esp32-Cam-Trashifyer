@@ -6,12 +6,14 @@
 #include <time.h>             // Required for NTP time synchronization
 
 // WiFi credentials
-const char *ssid = "TECNO-TR118-638B";
-const char *password = "751086D1";
+const char *ssid = "G Unit";
+const char *password = "hinokamikagurass";
 
 // Server configuration
 // IMPORTANT: If using HTTPS, ensure your server URL starts with "https://"
 const char *serverURL = "https://7jbs67jq-8000.inc1.devtunnels.ms/classify"; // Using '/classify' as per your server output
+
+// String host = "http://192.168.172.130:8000";
 
 // NTP Server for time synchronization (crucial for HTTPS certificate validation)
 const char* ntpServer = "pool.ntp.org";
@@ -50,6 +52,8 @@ void takePhotoAndClassify();
 String sendImageToServer(uint8_t *imageData, size_t imageSize);
 void parseClassificationResult(String jsonResponse);
 void showStatus();
+void TestGet();
+String sendToServer2(uint8_t *imageData, size_t imagesize);
 
 
 void setup() {
@@ -81,6 +85,7 @@ void setup() {
   Serial.println("Commands:");
   Serial.println("  snap      - Take photo and classify");
   Serial.println("  status    - Show connection status");
+  Serial.println("  get    - Test Whether You Can Make Network Requests");
   Serial.println("  reconnect - Attempt to reconnect to WiFi");
 }
 
@@ -102,6 +107,11 @@ void loop() {
       if (WiFi.status() == WL_CONNECTED) {
         synchronizeTime(); // Re-sync time if WiFi reconnects
       }
+    }else if (command == "get")
+    {
+      
+      TestGet();
+
     } else {
       Serial.println("❓ Unknown command. Available: snap, status, reconnect");
     }
@@ -302,7 +312,8 @@ void takePhotoAndClassify() {
                 (fb->format == PIXFORMAT_JPEG) ? "JPEG" : "Other");
   
   // Send the captured image data to the server.
-  String result = sendImageToServer(fb->buf, fb->len);
+  // String result = sendImageToServer(fb->buf, fb->len);
+  String result = sendToServer2(fb->buf, fb->len);
   
   // Release the camera frame buffer after use to free up memory.
   esp_camera_fb_return(fb);
@@ -312,13 +323,11 @@ void takePhotoAndClassify() {
 }
 
 // Sends the image data to the configured server using HTTP POST multipart/form-data.
-// This function uses streaming to avoid large memory allocations.
+// This function now correctly implements streaming using the http.POST("") method
+// and writing to the stream pointer, which is more broadly compatible.
 String sendImageToServer(uint8_t *imageData, size_t imageSize) {
   WiFiClientSecure client; 
   // WARNING: Disables certificate validation. FOR TESTING ONLY!
-  // This is acceptable for development tunnels, but for any production system,
-  // you MUST replace this with proper certificate validation by loading the root CA certificate.
-  // Example: client.setCACert(ROOT_CA_CERTIFICATE); 
   client.setInsecure(); 
 
   HTTPClient http;
@@ -335,12 +344,10 @@ String sendImageToServer(uint8_t *imageData, size_t imageSize) {
       return "";
   }
   
-  // Set a longer timeout in milliseconds (e.g., 30 seconds)
-  // This is crucial for servers that might take time to process the image.
+  // Set a longer timeout in milliseconds (e.g., 30 seconds) for the entire request/response.
   http.setTimeout(30000); // 30 seconds timeout
   
   // Define the multipart boundary string.
-  // Using a consistent boundary as per your Postman/curl example.
   String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"; 
   String contentType = "multipart/form-data; boundary=" + boundary;
   
@@ -355,8 +362,8 @@ String sendImageToServer(uint8_t *imageData, size_t imageSize) {
   // Calculate the total size of the request body (header + image data + footer).
   size_t totalPayloadSize = headerPart.length() + imageSize + footerPart.length();
   
-  // Add HTTP headers. Content-Type and Content-Length are crucial for multipart uploads.
   http.addHeader("Content-Type", contentType);
+  // Content-Length is crucial for multipart uploads; it must be set manually here.
   http.addHeader("Content-Length", String(totalPayloadSize));
   
   Serial.printf("⬆️ Sending image of size %d bytes (total payload %d bytes)...\n", imageSize, totalPayloadSize);
@@ -364,32 +371,18 @@ String sendImageToServer(uint8_t *imageData, size_t imageSize) {
   // Initiate the POST request. Passing an empty string here signals that we will stream the body.
   int httpResponseCode = http.POST(""); 
   
-  if (httpResponseCode > 0) { // Check if the request was successfully initiated (e.g., 200 OK, or informational 1xx)
-    Serial.printf("📡 HTTP Request started. Response code: %d\n", httpResponseCode);
+  if (httpResponseCode > 0) { // If server responded with headers (e.g., 200 OK, 408 Timeout, etc.)
+    Serial.printf("📡 HTTP Request started. Server responded with status: %d\n", httpResponseCode);
     
-    // Get the underlying stream from the HTTPClient object.
-    WiFiClient* streamClient = http.getStreamPtr(); 
-    if (streamClient) {
-      // Write the header part of the multipart form.
-      streamClient->print(headerPart);
-      // Write the actual image binary data.
-      streamClient->write(imageData, imageSize);
-      // Write the footer part of the multipart form.
-      streamClient->print(footerPart);
-      
-      // Wait for the server's full response.
-      String response = http.getString();
-      Serial.printf("✅ Server Response: HTTP Status %d\n", httpResponseCode);
-      http.end(); // Close the connection.
-      return response;
-    } else {
-      Serial.println("❌ Error: Failed to get HTTP client stream pointer. Check network connection.");
-      http.end();
-      return "";
-    }
-  } else {
+    // Get the full response string.
+    String response = http.getString();
+    Serial.printf("✅ Server Response: HTTP Status %d\n", httpResponseCode);
+    http.end(); // Close the connection.
+    return response;
+    
+  } else { // Error initiating the request (e.g., connection refused, DNS error, initial timeout before any server response)
     Serial.printf("❌ HTTP request failed: %s (code %d)\n", http.errorToString(httpResponseCode).c_str(), httpResponseCode);
-    // Print more details for common HTTPS errors
+    // Detailed error messages based on common HTTPClient error codes
     if (httpResponseCode == -1) {
       Serial.println("  Possible causes for '-1' (Connection refused/host not found): ");
       Serial.println("  - Dev tunnel not active/reachable from ESP32's network.");
@@ -397,9 +390,9 @@ String sendImageToServer(uint8_t *imageData, size_t imageSize) {
       Serial.println("  - DNS resolution issue for the tunnel URL on ESP32.");
       Serial.println("  - SSL/TLS handshake failure (even with setInsecure, initial connection needs to be made).");
     }
-    if (httpResponseCode == -2) Serial.println("  Error: Disconnected.");
-    if (httpResponseCode == -11) Serial.println("  Error: Read Timeout. Server took too long to respond.");
-    if (httpResponseCode == -12) Serial.println("  Error: Write Timeout. Failed to send request body in time.");
+    if (httpResponseCode == -2) Serial.println("  Error: Disconnected during initiation.");
+    if (httpResponseCode == -11) Serial.println("  Error: Read Timeout during initiation (server didn't respond with headers).");
+    if (httpResponseCode == -12) Serial.println("  Error: Write Timeout during initiation (failed to send initial headers).");
     http.end();
     return "";
   }
@@ -436,15 +429,15 @@ void parseClassificationResult(String jsonResponse) {
     Serial.println(category); // Print category in uppercase for emphasis
     
     // Provide user-friendly messages based on the classification category.
-    if (category == "PAPER") { 
+    if (category == "paper") { 
       Serial.println("♻️  PAPER WASTE - Recyclable");
-    } else if (category == "METAL") {
+    } else if (category == "metal") {
       Serial.println("🥫 METAL WASTE - Recyclable");
-    } else if (category == "GLASS") {
+    } else if (category == "glass") {
       Serial.println("🍶 GLASS WASTE - Recyclable");
-    } else if (category == "ORGANIC") {
+    } else if (category == "organic") {
       Serial.println("🍃 ORGANIC WASTE - Compostable");
-    } else if (category == "NOT_TRASH") {
+    } else if (category == "not_trash") {
       Serial.println("🚫 NOT TRASH - Item not recognized as waste");
     } else {
       Serial.println("❓ UNKNOWN CATEGORY - Please verify server response logic.");
@@ -468,3 +461,107 @@ void showStatus() {
   Serial.printf("Minimum Free Heap: %d bytes (since last reset)\n", esp_get_minimum_free_heap_size());
   Serial.println("========================");
 }
+
+// Test Http client library
+void TestGet() {
+  HTTPClient http;
+
+  String url = "http://192.168.177.130:8000/test";
+
+  Serial.println("================================JSON RESPONSE Test ============================");
+
+  http.begin(url);
+  int httpCode = http.GET();
+
+  if (httpCode > 0) {
+    Serial.printf("HTTP GET Response Code: %d\n", httpCode);
+
+    if (httpCode == HTTP_CODE_OK) {
+      String payload = http.getString();
+      Serial.println("Raw JSON: ");
+      Serial.println(payload);
+
+      const size_t capacity = 256;  // Adjust as needed
+      DynamicJsonDocument doc(capacity);
+      DeserializationError error = deserializeJson(doc, payload);
+
+      if (!error) {
+        const char* status = doc["status"];
+        const char* message = doc["message"];
+
+        Serial.printf("🪧 Status: %s\n", status);
+        Serial.printf("💬 Message: %s\n", message);
+      } else {
+        Serial.print("⚠️ JSON parse error: ");
+        Serial.println(error.c_str());
+        Serial.println("Payload was:");
+        Serial.println(payload);
+      }
+    } else {
+      Serial.printf("❌ HTTP GET failed!: %s\n", http.errorToString(httpCode).c_str());
+    }
+  } else {
+    Serial.printf("❌ HTTP GET failed to connect: %s\n", http.errorToString(httpCode).c_str());
+  }
+
+  http.end();
+  Serial.println("================================End Of RESPONSE================================");
+}
+
+String sendToServer2(uint8_t *imageData, size_t imagesize) {
+  HTTPClient http;
+  WiFiClient* stream;
+
+  String url = "http://192.168.177.130:8000/classify";
+
+  String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+
+  String bodyStart = "--" + boundary + "\r\n";
+  bodyStart += "Content-Disposition: form-data; name=\"file\"; filename=\"image.jpg\"\r\n";
+  bodyStart += "Content-Type: image/jpeg\r\n\r\n";  // Critical line break
+
+
+  String bodyEnd = "\r\n--" + boundary + "--\r\n";
+
+  int contentLength = bodyStart.length() + imagesize + bodyEnd.length();
+
+  uint8_t* payload = (uint8_t*)malloc(contentLength);
+
+  if (!payload) {
+    Serial.println("Memory Allocation Failed!");
+
+  }
+
+  // copy all parts into the payload
+  memcpy(payload, bodyStart.c_str(), bodyStart.length());
+  memcpy(payload + bodyStart.length(), imageData, imagesize);
+  memcpy(payload + bodyStart.length() + imagesize, bodyEnd.c_str(), bodyEnd.length());
+
+
+  http.begin(url);
+  http.addHeader("Content-Type", "multipart/form-data; boundary="+boundary);
+  // http.addHeader("Content-Length", String(contentLength));
+
+  // stream = http.getStreamPtr();
+
+  int httpCode = http.POST(payload, contentLength);
+
+  free(payload);
+
+  // stream -> print(bodyStart);
+  // stream -> write((const uint8_t *)imageData, imagesize);
+  // stream -> print(bodyEnd);
+  
+  if (httpCode == HTTP_CODE_OK) {
+    String res = http.getString();
+    http.end();
+    return res;
+
+  }
+
+  http.end();
+  Serial.println("HTTP Status Code ====> " + httpCode);
+  return "";
+
+}
+ 

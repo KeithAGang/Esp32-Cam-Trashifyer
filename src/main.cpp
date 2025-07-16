@@ -5,13 +5,13 @@
 #include <WiFiClientSecure.h> // Required for HTTPS connections
 #include <time.h>             // Required for NTP time synchronization
 
-// WiFi credentials, Mkae Sure To Use Correct Detaile, For Example:
-const char *ssid = "Smith";
-const char *password = "2!$%888thyik@gur@5s";
+// WiFi credentials
+const char *ssid = "Keith";
+const char *password = "2003@#inokamik@gur@5s";
 
 // Server configuration
 // IMPORTANT: If using HTTPS, ensure your server URL starts with "https://"
-const char *serverURL = "https://7jbs67jq-8000.inc1.devtunnels.ms/classify"; // Using '/classify' as per your server output // Replace with your URL
+const char *serverURL = "https://7jbs67jq-8000.inc1.devtunnels.ms/classify"; // Using '/classify' as per your server output
 
 // String host = "http://192.168.172.130:8000";
 
@@ -363,6 +363,90 @@ void takePhotoAndClassify()
   parseClassificationResult(result);
 }
 
+// Sends the image data to the configured server using HTTP POST multipart/form-data.
+// This function now correctly implements streaming using the http.POST("") method
+// and writing to the stream pointer, which is more broadly compatible.
+String sendImageToServer(uint8_t *imageData, size_t imageSize)
+{
+  WiFiClientSecure client;
+  // WARNING: Disables certificate validation. FOR TESTING ONLY!
+  client.setInsecure();
+
+  HTTPClient http;
+
+  Serial.print("Connecting to server: ");
+  Serial.println(serverURL);
+
+  // Small delay before beginning HTTP connection, in case of timing issues
+  delay(50);
+
+  // Begin the HTTP connection with the secure client
+  if (!http.begin(client, serverURL))
+  { // Use the secure client for HTTPS
+    Serial.println("❌ Failed to begin HTTPS connection.");
+    return "";
+  }
+
+  // Set a longer timeout in milliseconds (e.g., 30 seconds) for the entire request/response.
+  http.setTimeout(30000); // 30 seconds timeout
+
+  // Define the multipart boundary string.
+  String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+  String contentType = "multipart/form-data; boundary=" + boundary;
+
+  // Construct the multipart header for the image file.
+  String headerPart = "--" + boundary + "\r\n";
+  headerPart += "Content-Disposition: form-data; name=\"file\"; filename=\"esp32cam.jpg\"\r\n";
+  headerPart += "Content-Type: image/jpeg\r\n\r\n"; // Important: two newlines after Content-Type
+
+  // Construct the multipart footer.
+  String footerPart = "\r\n--" + boundary + "--\r\n"; // Important: newline before boundary, then two hyphens at end
+
+  // Calculate the total size of the request body (header + image data + footer).
+  size_t totalPayloadSize = headerPart.length() + imageSize + footerPart.length();
+
+  http.addHeader("Content-Type", contentType);
+  // Content-Length is crucial for multipart uploads; it must be set manually here.
+  http.addHeader("Content-Length", String(totalPayloadSize));
+
+  Serial.printf("⬆️ Sending image of size %d bytes (total payload %d bytes)...\n", imageSize, totalPayloadSize);
+
+  // Initiate the POST request. Passing an empty string here signals that we will stream the body.
+  int httpResponseCode = http.POST("");
+
+  if (httpResponseCode > 0)
+  { // If server responded with headers (e.g., 200 OK, 408 Timeout, etc.)
+    Serial.printf("📡 HTTP Request started. Server responded with status: %d\n", httpResponseCode);
+
+    // Get the full response string.
+    String response = http.getString();
+    Serial.printf("✅ Server Response: HTTP Status %d\n", httpResponseCode);
+    http.end(); // Close the connection.
+    return response;
+  }
+  else
+  { // Error initiating the request (e.g., connection refused, DNS error, initial timeout before any server response)
+    Serial.printf("❌ HTTP request failed: %s (code %d)\n", http.errorToString(httpResponseCode).c_str(), httpResponseCode);
+    // Detailed error messages based on common HTTPClient error codes
+    if (httpResponseCode == -1)
+    {
+      Serial.println("  Possible causes for '-1' (Connection refused/host not found): ");
+      Serial.println("  - Dev tunnel not active/reachable from ESP32's network.");
+      Serial.println("  - Firewall blocking connection on server/tunnel side.");
+      Serial.println("  - DNS resolution issue for the tunnel URL on ESP32.");
+      Serial.println("  - SSL/TLS handshake failure (even with setInsecure, initial connection needs to be made).");
+    }
+    if (httpResponseCode == -2)
+      Serial.println("  Error: Disconnected during initiation.");
+    if (httpResponseCode == -11)
+      Serial.println("  Error: Read Timeout during initiation (server didn't respond with headers).");
+    if (httpResponseCode == -12)
+      Serial.println("  Error: Write Timeout during initiation (failed to send initial headers).");
+    http.end();
+    return "";
+  }
+}
+
 // Parses the JSON response from the classification server and prints the result.
 void parseClassificationResult(String jsonResponse)
 {
@@ -502,14 +586,11 @@ void TestGet()
   Serial.println("================================End Of RESPONSE================================");
 }
 
-// Sends the image data to the configured server using HTTP POST multipart/form-data.
-// This function now correctly implements streaming using the http.POST("") method
-// and writing to the stream pointer, which is more broadly compatible.
 String sendToServer2(uint8_t *imageData, size_t imagesize)
 {
   HTTPClient http;
 
-  String url = "http://192.168.254.15:8000/classify"; // Replace with your URL
+  String url = "http://192.168.254.15:8000/classify";
 
   // Add timeout settings
   http.setTimeout(15000);       // 15 seconds timeout
